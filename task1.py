@@ -76,7 +76,9 @@ def ocr(test_img, characters):
         name: name of character provided or "UNKNOWN".
         Note : the order of detected characters should follow english text reading pattern, i.e.,
             list should start from top left, then move from left to right. After finishing the first line, go to the next line and continue.
-        
+            :param test_img:
+            :param characters:
+
     """
     # TODO Add your code here. Do not modify the return and input arguments
     # cv2.imshow("tet", test_img)
@@ -86,9 +88,14 @@ def ocr(test_img, characters):
 
     cc_list = detection(test_img)
 
-    recognition(enrolled_images, test_img, cc_list)
+    bbox_list, char_names = recognition(enrolled_images, test_img, cc_list)
 
-    # raise NotImplementedError
+    result = []
+    for index, bbox in enumerate(bbox_list):
+        data = {'bbox': bbox, 'name': char_names[index]}
+        result.append(data)
+
+    return result
 
 
 def enrollment(images_to_read):
@@ -104,11 +111,12 @@ def enrollment(images_to_read):
         # read_img = read_image(absolute_path, False)
         sift_object = cv2.SIFT_create(nfeatures=100)  # type: cv2.SIFT
         kp, descriptor = sift_object.detectAndCompute(image[1], None)  # type: list, list
-        if descriptor.count() == 0:
+        if not np.any(np.asarray(descriptor)):
             continue
         outfile = open(str(image[0]) + ".json", 'w')
         json.dump(np.asarray(descriptor).tolist(), outfile, indent=6)
         enrolled_images.append(outfile.name)
+        outfile.close()
 
     return enrolled_images
 
@@ -133,8 +141,8 @@ def label_bfs(binary_image):
 
     label = 1
     # Pairs as up, right, down, left
-    d_row = [-1, 0, 1, 0]
-    d_col = [0, 1, 0, -1]
+    d_row = [-1, 0, 1, 0, -1, 1, 1, -1]
+    d_col = [0, 1, 0, -1, -1, 1, -1, 1]
 
     connected_components = []
 
@@ -145,10 +153,11 @@ def label_bfs(binary_image):
                 continue
 
             q = [(row, col)]
-            component_start_coord = (row, col)
 
             max_j = 0
             max_i = 0
+            min_i = max_row
+            min_j = max_col
             while len(q) > 0:
                 cell = q.pop()
                 i = cell[0]
@@ -157,6 +166,11 @@ def label_bfs(binary_image):
                     max_i = i
                 if j > max_j:
                     max_j = j
+
+                if i < min_i:
+                    min_i = i
+                if j < min_j:
+                    min_j = j
 
                 binary_image[i][j] = label
                 for k in range(4):
@@ -169,7 +183,7 @@ def label_bfs(binary_image):
                         vis[adj_i][adj_j] = True
 
             label += 1
-            connected_components.append([component_start_coord, max_i, max_j])
+            connected_components.append([min_i, min_j, max_j - min_j, max_i - min_i])
 
     return binary_image, connected_components
 
@@ -199,6 +213,38 @@ def detection(test_img):
     return connected_comps
 
 
+def get_ssd(test_desc, desc):
+    min_ssd = float('inf')
+    ssd_list = []
+    for row in desc:
+        for test_row in test_desc:
+            row = np.asarray(row)
+            test_row = np.asarray(test_row)
+            # SSD
+            ssd = (np.square(np.subtract(row, test_row))).sum()
+            if ssd < min_ssd:
+                min_ssd = ssd
+
+    return min_ssd
+
+
+def is_match_sift_descriptors(test_desc, desc, threshold):
+    min_ssd = float('inf')
+    for row in desc:
+        for test_row in test_desc:
+            row = np.asarray(row)
+            test_row = np.asarray(test_row)
+            # SSD
+            ssd = (np.square(np.subtract(row, test_row))).sum()
+            if ssd < min_ssd:
+                min_ssd = ssd
+    # 33300
+    if min_ssd < threshold:
+        return True
+
+    return False
+
+
 def recognition(enrolled_images, test_img, cc_list):
     """ 
     Args:
@@ -208,14 +254,68 @@ def recognition(enrolled_images, test_img, cc_list):
     """
     # TODO: Step 3 : Your Recognition code should go here.
 
+    # Get our descriptors back as (char_name, descriptor)
+    enrolled_descriptors = []
+    sift_object = cv2.SIFT_create(nfeatures=100)  # type: cv2.SIFT
+    for image in enrolled_images:
+        with open(image) as f:
+            data = (image.split('.')[0], np.asarray(json.load(f)))
+            enrolled_descriptors.append(data)
+    f.close()
+    bbox = []
+    chars = []
+    char_min_ssd = []
+
+    # Get a list of min SSDs for each cc/enroll pair
+    for x_coord, y_coord, width, height in cc_list:
+        component = np.asarray(test_img[x_coord: x_coord + height,
+                               y_coord: y_coord + width])
+
+        # TODO: Remove np.pad()
+        padded_component = np.pad(component, [(5, 5), (5, 5)], mode='constant', constant_values=255)
+        # show_image(padded_component, delay=1000)
+        _, test_descriptor = sift_object.detectAndCompute(padded_component, None)
+        if not np.any(np.asarray(test_descriptor)):
+            continue
+        for char_name, descriptor in enrolled_descriptors:
+            char_min_ssd.append(get_ssd(test_descriptor, descriptor))
+    char_min_ssd = np.sort(np.asarray(char_min_ssd))
+    threshold = char_min_ssd[round(len(char_min_ssd) * 0.049)]
+
+    for x_coord, y_coord, width, height in cc_list:
+        component = np.asarray(test_img[x_coord: x_coord + height,
+                               y_coord: y_coord + width])
+
+        # TODO: Remove np.pad()
+        padded_component = np.pad(component, [(5, 5), (5, 5)], mode='constant', constant_values=255)
+        # show_image(padded_component, delay=1000)
+        _, test_descriptor = sift_object.detectAndCompute(padded_component, None)
+        if not np.any(np.asarray(test_descriptor)):
+            continue
+        matched = False
+
+        for char_name, descriptor in enrolled_descriptors:
+            if is_match_sift_descriptors(test_descriptor, descriptor, threshold=threshold):
+                bbox.append([y_coord, x_coord, width, height])
+                chars.append(char_name)
+                matched = True
+                break
+                # print(char_name)
+                # show_image(padded_component, delay=10000)
+
+        if not matched:
+            bbox.append([y_coord, x_coord, width, height])
+            chars.append('UNKNOWN')
+
+    return bbox, chars
+
     # raise NotImplementedError
 
 
-def save_results(coordinates, rs_directory):
+def save_results(results, rs_directory):
     """
     Donot modify this code
     """
-    results = []
     with open(os.path.join(rs_directory, 'results.json'), "w") as file:
         json.dump(results, file)
 
