@@ -200,8 +200,15 @@ def detection(test_img):
 
     # TODO: Step 2 : Your Detection code should go here.
 
-    # Converting those pixels with values 1-127 to 255 and others to 255.
-    _, binary_img = cv2.threshold(test_img, 200, 255, cv2.THRESH_BINARY)  # type: list, list
+    # Converting pixels with values 1-200 to 0 and rest to 255.
+    binary_img = deepcopy(test_img)
+    row, col = np.asarray(binary_img).shape
+    for i in range(0, row):
+        for j in range(0, col):
+            if binary_img[i][j] > 200:
+                binary_img[i][j] = 255
+            else:
+                binary_img[i][j] = 0
 
     # show_image(binary_img, delay=10000)
     # implement connected component with bfs
