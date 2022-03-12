@@ -17,7 +17,6 @@ import os
 import glob
 # opencv version - 4.5.4.60
 import cv2
-import csv
 import numpy as np
 from copy import deepcopy
 
@@ -114,7 +113,9 @@ def enrollment(images_to_read):
         if not np.any(np.asarray(descriptor)):
             continue
         outfile = open(str(image[0]) + ".json", 'w')
-        json.dump(np.asarray(descriptor).tolist(), outfile, indent=6)
+        height, width = np.asarray(image[1]).shape
+        data = [descriptor.tolist(), (width, height)]
+        json.dump(data, outfile)
         enrolled_images.append(outfile.name)
         outfile.close()
 
@@ -200,8 +201,9 @@ def detection(test_img):
     # TODO: Step 2 : Your Detection code should go here.
 
     # Converting those pixels with values 1-127 to 255 and others to 255.
-    _, binary_img = cv2.threshold(test_img, 100, 255, cv2.THRESH_BINARY)  # type: list, list
+    _, binary_img = cv2.threshold(test_img, 200, 255, cv2.THRESH_BINARY)  # type: list, list
 
+    # show_image(binary_img, delay=10000)
     # implement connected component with bfs
 
     labelled_image, connected_comps = label_bfs(deepcopy(binary_img))
@@ -259,42 +261,51 @@ def recognition(enrolled_images, test_img, cc_list):
     sift_object = cv2.SIFT_create(nfeatures=100)  # type: cv2.SIFT
     for image in enrolled_images:
         with open(image) as f:
-            data = (image.split('.')[0], np.asarray(json.load(f)))
+            json_data = json.load(f)
+            data = [image.split('.')[0], json_data[0], json_data[1]]
             enrolled_descriptors.append(data)
     f.close()
     bbox = []
     chars = []
     char_min_ssd = []
 
+    test_img_bbox_overlay = deepcopy(test_img)
+
     # Get a list of min SSDs for each cc/enroll pair
     for x_coord, y_coord, width, height in cc_list:
         component = np.asarray(test_img[x_coord: x_coord + height,
                                y_coord: y_coord + width])
+        # Blue color in BGR
+        color = (0, 0, 255)
+        cv2.rectangle(test_img_bbox_overlay, (y_coord, x_coord), (y_coord + width, x_coord + height), color, thickness=2)
 
         # TODO: Remove np.pad()
-        padded_component = np.pad(component, [(5, 5), (5, 5)], mode='constant', constant_values=255)
+        padded_component = np.pad(component, [(10, 10), (10, 10)], mode='constant', constant_values=255)
         # show_image(padded_component, delay=1000)
-        _, test_descriptor = sift_object.detectAndCompute(padded_component, None)
-        if not np.any(np.asarray(test_descriptor)):
-            continue
-        for char_name, descriptor in enrolled_descriptors:
+        for char_name, descriptor, dim in enrolled_descriptors:
+            padded_component = cv2.resize(padded_component, dim)
+            _, test_descriptor = sift_object.detectAndCompute(padded_component, None)
+            if not np.any(np.asarray(test_descriptor)):
+                continue
             char_min_ssd.append(get_ssd(test_descriptor, descriptor))
     char_min_ssd = np.sort(np.asarray(char_min_ssd))
-    threshold = char_min_ssd[round(len(char_min_ssd) * 0.049)]
+    threshold = char_min_ssd[round(len(char_min_ssd) * 0.055)]
 
     for x_coord, y_coord, width, height in cc_list:
         component = np.asarray(test_img[x_coord: x_coord + height,
                                y_coord: y_coord + width])
 
         # TODO: Remove np.pad()
-        padded_component = np.pad(component, [(5, 5), (5, 5)], mode='constant', constant_values=255)
+        padded_component = np.pad(component, [(10, 10), (10, 10)], mode='constant', constant_values=255)
         # show_image(padded_component, delay=1000)
-        _, test_descriptor = sift_object.detectAndCompute(padded_component, None)
-        if not np.any(np.asarray(test_descriptor)):
-            continue
+
         matched = False
 
-        for char_name, descriptor in enrolled_descriptors:
+        for char_name, descriptor, dim in enrolled_descriptors:
+            padded_component = cv2.resize(padded_component, dim)
+            _, test_descriptor = sift_object.detectAndCompute(padded_component, None)
+            if not np.any(np.asarray(test_descriptor)):
+                continue
             if is_match_sift_descriptors(test_descriptor, descriptor, threshold=threshold):
                 bbox.append([y_coord, x_coord, width, height])
                 chars.append(char_name)
@@ -307,6 +318,7 @@ def recognition(enrolled_images, test_img, cc_list):
             bbox.append([y_coord, x_coord, width, height])
             chars.append('UNKNOWN')
 
+    # show_image(test_img_bbox_overlay, delay=5000)
     return bbox, chars
 
     # raise NotImplementedError
